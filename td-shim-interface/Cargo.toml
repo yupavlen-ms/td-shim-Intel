@@ -5,8 +5,7 @@ license = "BSD-2-Clause-Patent"
 description = "TD-shim metadata data structures and related functions. UEFI Platform Initializaiton data structures and accessors"
 
 edition = "2018"
-homepage = "https://github.com/confidential-containers/td-shim"
-repository = "https://github.com/confidential-containers/td-shim"
+repository = "https://github.com/yupavlen-ms/td-shim"
 readme = "README.md"
 keywords = ["td-shim", "TDX", "intel"]
 

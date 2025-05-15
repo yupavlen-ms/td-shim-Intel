@@ -36,4 +36,4 @@ RUN set -eux; \
     cd Rudra; \
     ./install-release.sh;
 
-RUN git clone https://github.com/confidential-containers/td-shim.git
+RUN git clone https://github.com/yupavlen-ms/td-shim.git

@@ -2,8 +2,7 @@
 name = "td-layout-config"
 version = "0.1.0"
 description = "Generate td-shim build-time/runtime layout from a json configuration file"
-repository = "https://github.com/confidential-containers/td-shim"
-homepage = "https://github.com/confidential-containers"
+repository = "https://github.com/yupavlen-ms/td-shim"
 license = "BSD-2-Clause-Patent"
 edition = "2018"
 

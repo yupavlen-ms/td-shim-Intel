@@ -2,8 +2,7 @@
 name = "td-logger"
 version = "0.1.0"
 description = "Simple logger backend for td-shim"
-repository = "https://github.com/confidential-containers/td-shim"
-homepage = "https://github.com/confidential-containers"
+repository = "https://github.com/yupavlen-ms/td-shim"
 license = "BSD-2-Clause-Patent"
 edition = "2018"
 

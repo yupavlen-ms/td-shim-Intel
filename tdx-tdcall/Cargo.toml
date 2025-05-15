@@ -2,8 +2,7 @@
 name = "tdx-tdcall"
 version = "0.2.3"
 description = "Constants, stuctures and wrappers to access TDCALL services"
-repository = "https://github.com/confidential-containers/td-shim"
-homepage = "https://github.com/confidential-containers"
+repository = "https://github.com/yupavlen-ms/td-shim"
 license = "BSD-2-Clause-Patent"
 edition = "2018"
 

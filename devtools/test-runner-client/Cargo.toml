@@ -2,8 +2,7 @@
 name = "test-runner-client"
 version = "0.1.0"
 description = "Client cooperating with test-runner-server to execute unit test cases in virtual machines"
-repository = "https://github.com/confidential-containers/td-shim"
-homepage = "https://github.com/confidential-containers"
+repository = "https://github.com/yupavlen-ms/td-shim"
 license = "Apache-2.0"
 edition = "2018"
 

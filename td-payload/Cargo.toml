@@ -2,8 +2,7 @@
 name = "td-payload"
 version = "0.1.0"
 description = "A sample TD module/driver for TDX hardware platforms"
-repository = "https://github.com/confidential-containers/td-shim"
-homepage = "https://github.com/confidential-containers"
+repository = "https://github.com/yupavlen-ms/td-shim"
 license = "BSD-2-Clause-Patent"
 edition = "2018"
 
