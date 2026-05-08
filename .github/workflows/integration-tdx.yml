@@ -1,17 +1,11 @@
 on:
-  push:
-    paths-ignore:
-      - "**.md"
-  pull_request:
-    paths-ignore:
-      - "**.md"
   workflow_dispatch:
 
 name: Integration Test on TDX Server
 
 env:
   AS: nasm
-  RUST_TOOLCHAIN: 1.83.0
+  RUST_TOOLCHAIN: 1.88.0
   TOOLCHAIN_PROFILE: minimal
 
 jobs:
@@ -29,7 +23,7 @@ jobs:
           directory: ${{ runner.temp }}/llvm
 
       - name: Checkout sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: recursive
 
@@ -74,3 +68,6 @@ jobs:
           bash sh_script/integration_tdx.sh -t elf -f target/release/final-elf-sb-normal.bin
           bash sh_script/integration_tdx.sh -t elf -f target/release/final-elf-sb-mismatch-pubkey.bin
           bash sh_script/integration_tdx.sh -t elf -f target/release/final-elf-sb-unsigned.bin
+
+      - name: Build IGVM format image
+        run: bash sh_script/build_final.sh igvm_test

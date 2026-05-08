@@ -11,14 +11,26 @@
 //! TDVMCALL (TDG.VP.VMCALL) is a leaf function 0 for TDCALL. It helps invoke services from
 //! the host VMM.
 
-use core::result::Result;
+#[cfg(not(feature = "no-tdvmcall"))]
+use bitfield_struct::bitfield;
 #[cfg(not(feature = "no-tdvmcall"))]
 use core::sync::atomic::{fence, Ordering};
+use core::{convert::TryInto, result::Result};
 use lazy_static::lazy_static;
 #[cfg(not(feature = "no-tdvmcall"))]
 use x86_64::registers::rflags::{self, RFlags};
 
 use crate::*;
+
+#[cfg(not(feature = "no-tdvmcall"))]
+#[bitfield(u64)]
+#[derive(PartialEq, Eq)]
+struct MigTdLeaf {
+    migtd_leaffunction: u16,
+    migtd_apiversion: u8,
+    #[bits(40)]
+    reserved: u64,
+}
 
 cfg_if::cfg_if! {
     if #[cfg(not(feature = "no-tdvmcall"))] {
@@ -28,6 +40,8 @@ cfg_if::cfg_if! {
 }
 
 const TARGET_TD_UUID_NUM: usize = 4;
+const REBIND_SESSION_TOKEN_SIZE: usize = 32;
+
 pub const PAGE_SIZE_4K: u64 = 0x1000;
 pub const PAGE_SIZE_2M: u64 = 0x200000;
 
@@ -74,15 +88,36 @@ pub struct CpuIdInfo {
     pub edx: u32,
 }
 
+pub type TargetTdUuid = [u64; 4];
+
 #[derive(Debug, Default)]
 #[repr(C)]
 pub struct ServtdRWResult {
     pub content: u64,
-    pub uuid: [u64; 4],
+    pub uuid: TargetTdUuid,
 }
 
 lazy_static! {
     static ref SHARED_MASK: u64 = td_shared_mask().expect("Fail to get the shared mask of TD");
+}
+
+/// Report a fatal error to the VMM via TDG.VP.VMCALL<ReportFatalError>.
+///
+/// Per GHCI 1.5 section 3.4: informs the host VMM that the TD has experienced
+/// a fatal-error state with a zero-terminated error string in shared memory.
+#[cfg(not(feature = "no-tdvmcall"))]
+pub fn tdvmcall_report_fatal_error(error_code: u32, shared_gpa: Option<u64>) {
+    let r12 = (error_code as u64) | if shared_gpa.is_some() { 1u64 << 63 } else { 0 };
+    let r13 = shared_gpa.unwrap_or(0);
+
+    let mut args = TdVmcallArgs {
+        r11: TDVMCALL_REPORTFATALERROR,
+        r12,
+        r13,
+        ..Default::default()
+    };
+
+    let _ = td_vmcall(&mut args);
 }
 
 /// Used to help perform HLT operation.
@@ -520,6 +555,10 @@ pub fn tdvmcall_migtd_waitforrequest(
 ) -> Result<(), TdVmcallError> {
     let data_buffer_length = data_buffer.len() as u64;
     let data_buffer = data_buffer.as_mut_ptr() as u64 | *SHARED_MASK;
+    let migtdleafval = MigTdLeaf::new()
+        .with_migtd_leaffunction(TDVMCALL_MIGTD_WAITFORREQUEST)
+        .with_migtd_apiversion(1)
+        .with_reserved(0);
 
     // Ensure the address is aligned to 4K bytes
     if (data_buffer & 0xfff) != 0 {
@@ -533,7 +572,7 @@ pub fn tdvmcall_migtd_waitforrequest(
 
     let mut args = TdVmcallArgs {
         r11: TDVMCALL_MIGTD,
-        r12: TDVMCALL_MIGTD_WAITFORREQUEST,
+        r12: migtdleafval.into(),
         r13: data_buffer_length,
         r14: data_buffer,
         r15: interrupt as u64,
@@ -552,17 +591,22 @@ pub fn tdvmcall_migtd_waitforrequest(
 #[cfg(not(feature = "no-tdvmcall"))]
 pub fn tdvmcall_migtd_reportstatus(
     mig_request_id: u64,
-    pre_migration_status: u8,
+    pre_migration_status: u64,
     data_buffer: &mut [u8],
     interrupt: u8,
 ) -> Result<(), TdVmcallError> {
+    let le_bytes = pre_migration_status.to_le_bytes();
     // Ensure that the pre-migration status is not reserved
-    if (0xb..0xff).contains(&pre_migration_status) {
+    if (0xd..0xff).contains(&le_bytes[1]) {
         return Err(TdVmcallError::VmcallOperandInvalid);
     }
 
     let data_buffer_length = data_buffer.len() as u64;
     let data_buffer = data_buffer.as_mut_ptr() as u64 | *SHARED_MASK;
+    let migtdleafval = MigTdLeaf::new()
+        .with_migtd_leaffunction(TDVMCALL_MIGTD_REPORTSTATUS)
+        .with_migtd_apiversion(1)
+        .with_reserved(0);
 
     // Ensure the address is aligned to 4K bytes
     if (data_buffer & 0xfff) != 0 {
@@ -576,9 +620,9 @@ pub fn tdvmcall_migtd_reportstatus(
 
     let mut args = TdVmcallArgsEx {
         r11: TDVMCALL_MIGTD,
-        r12: TDVMCALL_MIGTD_REPORTSTATUS,
+        r12: migtdleafval.into(),
         r13: mig_request_id,
-        r14: pre_migration_status as u64,
+        r14: pre_migration_status,
         r15: data_buffer_length,
         rbx: data_buffer,
         rdi: interrupt as u64,
@@ -602,6 +646,10 @@ pub fn tdvmcall_migtd_send(
 ) -> Result<(), TdVmcallError> {
     let data_buffer_length = data_buffer.len() as u64;
     let data_buffer = data_buffer.as_mut_ptr() as u64 | *SHARED_MASK;
+    let migtdleafval = MigTdLeaf::new()
+        .with_migtd_leaffunction(TDVMCALL_MIGTD_SEND)
+        .with_migtd_apiversion(1)
+        .with_reserved(0);
 
     // Ensure the address is aligned to 4K bytes
     if (data_buffer & 0xfff) != 0 {
@@ -615,7 +663,7 @@ pub fn tdvmcall_migtd_send(
 
     let mut args = TdVmcallArgsEx {
         r11: TDVMCALL_MIGTD,
-        r12: TDVMCALL_MIGTD_SEND,
+        r12: migtdleafval.into(),
         r13: mig_request_id,
         r14: data_buffer_length,
         r15: data_buffer,
@@ -640,6 +688,10 @@ pub fn tdvmcall_migtd_receive(
 ) -> Result<(), TdVmcallError> {
     let data_buffer_length = data_buffer.len() as u64;
     let data_buffer = data_buffer.as_mut_ptr() as u64 | *SHARED_MASK;
+    let migtdleafval = MigTdLeaf::new()
+        .with_migtd_leaffunction(TDVMCALL_MIGTD_RECEIVE)
+        .with_migtd_apiversion(1)
+        .with_reserved(0);
 
     // Ensure the address is aligned to 4K bytes
     if (data_buffer & 0xfff) != 0 {
@@ -653,7 +705,7 @@ pub fn tdvmcall_migtd_receive(
 
     let mut args = TdVmcallArgsEx {
         r11: TDVMCALL_MIGTD,
-        r12: TDVMCALL_MIGTD_RECEIVE,
+        r12: migtdleafval.into(),
         r13: mig_request_id,
         r14: data_buffer_length,
         r15: data_buffer,
@@ -893,6 +945,43 @@ pub fn tdcall_servtd_rd(
     Ok(sertd_rw_result)
 }
 
+/// Used by the currently bound service TD to approve a new Service TD to be bound
+/// to the target TD.
+///
+/// Details can be found in TDX Module ABI spec section 'TDG.SERVTD.REBIND.APPROVE'.
+pub fn tdcall_servtd_rebind_approve(
+    old_binding_handle: u64,
+    rebind_session_token: &[u8],
+    target_td_uuid: &[u64],
+) -> Result<TargetTdUuid, TdCallError> {
+    if target_td_uuid.len() != TARGET_TD_UUID_NUM
+        || rebind_session_token.len() != REBIND_SESSION_TOKEN_SIZE
+    {
+        return Err(TdCallError::TdxExitInvalidParameters);
+    }
+
+    let mut args = TdcallArgs {
+        rax: TDCALL_SERVTD_REBIND_APPROVE,
+        rcx: old_binding_handle,
+        rdx: u64::from_le_bytes(rebind_session_token[0..8].try_into().unwrap()),
+        r8: u64::from_le_bytes(rebind_session_token[8..16].try_into().unwrap()),
+        r9: u64::from_le_bytes(rebind_session_token[16..24].try_into().unwrap()),
+        r10: target_td_uuid[0],
+        r11: target_td_uuid[1],
+        r12: target_td_uuid[2],
+        r13: target_td_uuid[3],
+        r14: u64::from_le_bytes(rebind_session_token[24..32].try_into().unwrap()),
+    };
+
+    let ret = td_call(&mut args);
+
+    if ret != TDCALL_STATUS_SUCCESS {
+        return Err(ret.into());
+    }
+
+    Ok([args.r10, args.r11, args.r12, args.r13])
+}
+
 /// Used by a service TD to write a metadata field (control structure field) of
 /// a target TD.
 ///
@@ -917,6 +1006,7 @@ pub fn tdcall_servtd_wr(
         r11: target_td_uuid[1],
         r12: target_td_uuid[2],
         r13: target_td_uuid[3],
+        ..Default::default()
     };
 
     let ret = td_call(&mut args);

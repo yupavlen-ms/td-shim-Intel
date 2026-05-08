@@ -5,6 +5,7 @@
 use byteorder::LittleEndian;
 use byteorder::ReadBytesExt;
 use core::fmt;
+use igvm::{IgvmDirectiveHeader, IgvmFile};
 use r_efi::base::Guid;
 use scroll::Pread;
 use serde::{Deserialize, Serialize};
@@ -14,8 +15,21 @@ use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
 use std::mem::size_of;
+use td_layout::build_time::{TD_SHIM_CONFIG_BASE, TD_SHIM_CONFIG_SIZE};
 use td_shim_interface::metadata::*;
+use zerocopy::FromBytes;
 use zeroize::Zeroize;
+
+#[derive(FromBytes)]
+#[repr(C)]
+pub struct IGVM_FIXED_HEADER {
+    pub magic: u32,
+    pub format_version: u32,
+    pub variable_header_offset: u32,
+    pub variable_header_size: u32,
+    pub total_file_size: u32,
+    pub checksum: u32,
+}
 
 pub const SHA384_DIGEST_SIZE: usize = 0x30;
 
@@ -122,24 +136,32 @@ impl fmt::Display for TdInfoStruct {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "TdInfo:\n\tAttributes:\n\t{:x?}\n\txfam:\n\t{:x?}\n\
-                        \tMR TD:\n\t{:x?}\n\tMR Config ID:\n\t{:x?}\n\
-                        \tMR Owner:\n\t{:x?}\n\tMR Owner Config:\n\t{:x?}\n\
-                        \tRTMR[0]:\n\t{:x?}\n\tRTMR[1]:\n\t{:x?}\n\
-                        \tRTMR[2]:\n\t{:x?}\n\tRTMR[3]:\n\t{:x?}\n",
-            self.attributes,
-            self.xfam,
-            self.mrtd,
-            self.mrconfig_id,
-            self.mrowner,
-            self.mrownerconfig,
-            self.rtmr0,
-            self.rtmr1,
-            self.rtmr2,
-            self.rtmr3
+            "TdInfo:\n\tAttributes:\t{:x?}\n\txfam:\t\t{:x?}\n\
+                        \tMRTD:\t\t{:x?}\n\tMRCONFIGID:\t{:x?}\n\
+                        \tMROWNER:\t{:x?}\n\tMROWNERCONFIG:\t{:x?}\n\
+                        \tRTMR[0]:\t{:x?}\n\tRTMR[1]:\t{:x?}\n\
+                        \tRTMR[2]:\t{:x?}\n\tRTMR[3]:\t{:x?}\n",
+            hex::encode(self.attributes),
+            hex::encode(self.xfam),
+            hex::encode(self.mrtd),
+            hex::encode(self.mrconfig_id),
+            hex::encode(self.mrowner),
+            hex::encode(self.mrownerconfig),
+            hex::encode(self.rtmr0),
+            hex::encode(self.rtmr1),
+            hex::encode(self.rtmr2),
+            hex::encode(self.rtmr3)
         )
     }
 }
+
+const MEM_PAGE_ADD: [u8; 16] = [
+    b'M', b'E', b'M', b'.', b'P', b'A', b'G', b'E', b'.', b'A', b'D', b'D', 0, 0, 0, 0,
+];
+const MR_EXTEND: [u8; 16] = [
+    b'M', b'R', b'.', b'E', b'X', b'T', b'E', b'N', b'D', 0, 0, 0, 0, 0, 0, 0,
+];
+const MRTD_EXTENSION_BUFFER_PADDING: [u8; 104] = [0; 104];
 
 impl TdInfoStruct {
     pub fn pack(self, buffer: &mut [u8; size_of::<TdInfoStruct>()]) -> usize {
@@ -269,10 +291,6 @@ impl TdInfoStruct {
 
         desc_offset += size_of::<TdxMetadataDescriptor>();
 
-        let mut buffer128: [u8; MRTD_EXTENSION_BUFFER_SIZE] = [0; MRTD_EXTENSION_BUFFER_SIZE]; // used by page add
-        let mut buffer3_128: [[u8; MRTD_EXTENSION_BUFFER_SIZE]; 3] =
-            [[0; MRTD_EXTENSION_BUFFER_SIZE]; 3]; // used by mr extend
-
         let mut sha384hasher = Sha384::new();
 
         for _i in 0..descriptor.number_of_section_entry {
@@ -306,41 +324,156 @@ impl TdInfoStruct {
                 panic!("Invalid type value!\n");
             }
 
-            let nr_pages = sec.memory_data_size / PAGE_SIZE;
+            raw_image_file
+                .seek(SeekFrom::Start(sec.data_offset as u64))
+                .expect("Seek cursor to sec.data_offset");
 
-            for iter in 0..nr_pages {
+            let mut section_data = vec![0u8; sec.raw_data_size as usize];
+
+            raw_image_file
+                .read_exact(&mut section_data)
+                .expect("Read from sec.data_offset");
+
+            section_data.resize_with(sec.memory_data_size as usize, Default::default);
+
+            let mut page_addr = sec.memory_address;
+
+            for page in section_data.chunks_exact(PAGE_SIZE as usize) {
+                // Use TDCALL [TDH.MEM.PAGE.ADD]
                 if sec.attributes & TDX_METADATA_ATTRIBUTES_EXTEND_MEM_PAGE_ADD == 0 {
-                    // Use TDCALL [TDH.MEM.PAGE.ADD]
-                    fill_buffer128_with_mem_page_add(
-                        &mut buffer128,
-                        sec.memory_address + iter * PAGE_SIZE,
-                    );
-
-                    sha384hasher.update(buffer128);
+                    // Byte 0 through 15 contain the ASCII string 'MEM.PAGE.ADD' and padding.
+                    sha384hasher.update(MEM_PAGE_ADD);
+                    // Byte 16 through 23 contain the GPA (in little-endian format).
+                    sha384hasher.update(page_addr.to_le_bytes());
+                    // 0 padding to 128 byte buffer.
+                    sha384hasher.update(MRTD_EXTENSION_BUFFER_PADDING);
                 }
 
-                // check attributes
+                // Use TDCALL [TDH.MR.EXTEND]
                 if sec.attributes & TDX_METADATA_ATTRIBUTES_EXTENDMR != 0 {
-                    // Use TDCALL [TDH.MR.EXTEND]
-                    let granularity = TDH_MR_EXTEND_GRANULARITY;
-                    let iteration = PAGE_SIZE / granularity;
-                    for chunk_iter in 0..iteration {
-                        fill_buffer3_128_with_mr_extend(
-                            &mut buffer3_128,
-                            sec.memory_address + iter * PAGE_SIZE + chunk_iter * granularity,
-                            raw_image_file,
-                            sec.data_offset as u64 + iter * PAGE_SIZE + chunk_iter * granularity,
-                        );
+                    let mut chunk_addr = page_addr;
 
-                        sha384hasher.update(buffer3_128[0]);
-                        sha384hasher.update(buffer3_128[1]);
-                        sha384hasher.update(buffer3_128[2]);
+                    for chunk in page.chunks_exact(TDH_MR_EXTEND_GRANULARITY as usize) {
+                        // Byte 0 through 15 contain the ASCII string 'MR.EXTEND' and padding.
+                        sha384hasher.update(MR_EXTEND);
+                        // Byte 16 through 23 contain the GPA (in little-endian format).
+                        sha384hasher.update(chunk_addr.to_le_bytes());
+                        // 0 padding to 128 byte buffer.
+                        sha384hasher.update(MRTD_EXTENSION_BUFFER_PADDING);
+
+                        // Hash 256 bytes of chunk data
+                        sha384hasher.update(chunk);
+                        chunk_addr += TDH_MR_EXTEND_GRANULARITY;
                     }
                 }
+                page_addr += PAGE_SIZE;
             }
         }
         let hash = sha384hasher.finalize();
         self.mrtd.copy_from_slice(hash.as_slice());
+    }
+
+    pub fn build_igvmmrtd(&mut self, raw_image_file: &mut File) {
+        let mut sha384hasher = Sha384::new();
+        let mut contents = Vec::new();
+        raw_image_file.read_to_end(&mut contents).unwrap();
+        let igvm = IgvmFile::new_from_binary(&contents, None).expect("file parse error");
+        let mut buffer128: [u8; MRTD_EXTENSION_BUFFER_SIZE] = [0; MRTD_EXTENSION_BUFFER_SIZE]; // used by page add
+        let mut buffer3_128: [[u8; MRTD_EXTENSION_BUFFER_SIZE]; 3] =
+            [[0; MRTD_EXTENSION_BUFFER_SIZE]; 3]; // used by mr extend
+
+        for dir in igvm
+            .directives()
+            .iter()
+            .filter(|x| matches! {x, IgvmDirectiveHeader::PageData { .. }})
+        {
+            if let IgvmDirectiveHeader::PageData {
+                gpa,
+                flags,
+                data_type: _,
+                compatibility_mask: _,
+                data,
+                ..
+            } = dir
+            {
+                // Skip shared pages.
+                if flags.shared() {
+                    continue;
+                }
+
+                // Use TDCALL [TDH.MEM.PAGE.ADD]
+                fill_buffer128_with_mem_page_add(&mut buffer128, *gpa);
+
+                sha384hasher.update(buffer128);
+
+                if !flags.unmeasured() {
+                    // Hash the contents of the 4K page, 256 bytes at a time.
+                    let page_data = data;
+                    if (page_data.len() > 0) && (page_data.len() % PAGE_SIZE as usize == 0) {
+                        // Use TDCALL [TDH.MR.EXTEND]
+                        for offset in (0..PAGE_SIZE).step_by(TDH_MR_EXTEND_GRANULARITY as usize) {
+                            fill_buffer3_128_with_mr_extend_tdvf(
+                                &mut buffer3_128,
+                                gpa + offset,
+                                page_data,
+                                offset as u64,
+                            );
+
+                            sha384hasher.update(buffer3_128[0]);
+                            sha384hasher.update(buffer3_128[1]);
+                            sha384hasher.update(buffer3_128[2]);
+                        }
+                    }
+                }
+            }
+        }
+
+        let hash = sha384hasher.finalize();
+        println!("MRTD Hash: {:x?}", hash);
+        self.mrtd.copy_from_slice(hash.as_slice());
+    }
+
+    pub fn read_igvmcfvdata(&mut self, raw_image_file: &mut File) -> Vec<u8> {
+        let mut contents = Vec::new();
+        let mut offset: usize = 0;
+        let mut validpages: usize = 0;
+        let mut cfv;
+        raw_image_file.read_to_end(&mut contents).unwrap();
+        let igvm = IgvmFile::new_from_binary(&contents, None).expect("file parse error");
+        let fixed_header = IGVM_FIXED_HEADER::read_from_prefix(contents.as_slice())
+            .expect("Invalid fixed header")
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+
+        for dir in igvm
+            .directives()
+            .iter()
+            .filter(|x| matches! {x, IgvmDirectiveHeader::PageData { .. }})
+        {
+            if let IgvmDirectiveHeader::PageData {
+                gpa,
+                flags: _,
+                data_type: _,
+                compatibility_mask: _,
+                data,
+                ..
+            } = dir
+            {
+                if *gpa >= TD_SHIM_CONFIG_BASE.into()
+                    && *gpa < ((TD_SHIM_CONFIG_BASE + TD_SHIM_CONFIG_SIZE).into())
+                {
+                    if data.len() > 0 {
+                        validpages += 1;
+                    }
+                    offset += 1;
+                }
+            }
+        }
+        // IGVM files deduplicates the pages, hence padding zeroes for configvolumesize
+        let paddingbytes = TD_SHIM_CONFIG_SIZE as usize - (validpages * PAGE_SIZE as usize);
+        offset = (fixed_header.variable_header_size + fixed_header.variable_header_offset) as usize;
+        cfv = contents[offset..offset + (validpages * PAGE_SIZE as usize)].to_vec();
+        cfv.extend(std::iter::repeat(0).take(paddingbytes));
+        cfv
     }
 
     pub fn build_rtmr_with_seperator(&mut self, seperator: u32) {
@@ -373,10 +506,10 @@ fn fill_buffer128_with_mem_page_add(buf: &mut [u8; MRTD_EXTENSION_BUFFER_SIZE], 
         .copy_from_slice(gpa.to_le_bytes().as_ref());
 }
 
-fn fill_buffer3_128_with_mr_extend(
+fn fill_buffer3_128_with_mr_extend_tdvf(
     buf: &mut [[u8; MRTD_EXTENSION_BUFFER_SIZE]; 3],
     gpa: u64,
-    file: &mut File,
+    data: &Vec<u8>,
     data_offset: u64,
 ) {
     buf[0].zeroize();
@@ -389,8 +522,12 @@ fn fill_buffer3_128_with_mr_extend(
     buf[0][0..MR_EXTEND_ASCII_SIZE].copy_from_slice("MR.EXTEND".as_bytes());
     buf[0][MR_EXTEND_GPA_OFFSET..MR_EXTEND_GPA_OFFSET + MR_EXTEND_GPA_SIZE]
         .copy_from_slice(gpa.to_le_bytes().as_ref());
-
-    file.seek(SeekFrom::Start(data_offset)).unwrap();
-    file.read_exact(&mut buf[1]).unwrap();
-    file.read_exact(&mut buf[2]).unwrap();
+    buf[1].copy_from_slice(
+        &data
+            [data_offset as usize..data_offset as usize + (TDH_MR_EXTEND_GRANULARITY as usize / 2)],
+    );
+    buf[2].copy_from_slice(
+        &data[data_offset as usize + (TDH_MR_EXTEND_GRANULARITY as usize / 2)
+            ..data_offset as usize + TDH_MR_EXTEND_GRANULARITY as usize],
+    );
 }

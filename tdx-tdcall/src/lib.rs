@@ -51,10 +51,12 @@ const TDCALL_VP_WR: u64 = 10;
 const TDCALL_SYS_RD: u64 = 11;
 const TDCALL_SERVTD_RD: u64 = 18;
 const TDCALL_SERVTD_WR: u64 = 20;
+const TDCALL_VERIFYREPORT: u64 = 22;
 const TDCALL_MEM_PAGE_ATTR_WR: u64 = 24;
 const TDCALL_VP_ENTER: u64 = 25;
 const TDCALL_VP_INVEPT: u64 = 26;
 const TDCALL_VP_INVVPID: u64 = 27;
+const TDCALL_SERVTD_REBIND_APPROVE: u64 = 33;
 #[cfg(feature = "tdg_dbg")]
 const TDCALL_TDG_DEBUG: u64 = 254;
 
@@ -76,6 +78,7 @@ cfg_if::cfg_if! {
         const TDVMCALL_MMIO: u64 = 0x00030;
         const TDVMCALL_MAPGPA: u64 = 0x10001;
         const TDVMCALL_GETQUOTE: u64 = 0x10002;
+        const TDVMCALL_REPORTFATALERROR: u64 = 0x10003;
         const TDVMCALL_SETUPEVENTNOTIFY: u64 = 0x10004;
         const TDVMCALL_SERVICE: u64 = 0x10005;
         const TDVMCALL_MIGTD: u64 = 0x10006;
@@ -85,10 +88,10 @@ cfg_if::cfg_if! {
         const TDVMCALL_STATUS_RETRY: u64 = 1;
 
         // TDVMCALL<MigTD> leaf function numbers
-        const TDVMCALL_MIGTD_WAITFORREQUEST: u64 = 1;
-        const TDVMCALL_MIGTD_REPORTSTATUS: u64 = 2;
-        const TDVMCALL_MIGTD_SEND: u64 = 3;
-        const TDVMCALL_MIGTD_RECEIVE: u64 = 4;
+        const TDVMCALL_MIGTD_WAITFORREQUEST: u16 = 1;
+        const TDVMCALL_MIGTD_REPORTSTATUS: u16 = 2;
+        const TDVMCALL_MIGTD_SEND: u16= 3;
+        const TDVMCALL_MIGTD_RECEIVE: u16 = 4;
     }
 }
 
@@ -164,6 +167,7 @@ pub struct TdcallArgs {
     pub r11: u64,
     pub r12: u64,
     pub r13: u64,
+    pub r14: u64,
 }
 
 // Used to pass the values of input/output register when performing TDVMCALL

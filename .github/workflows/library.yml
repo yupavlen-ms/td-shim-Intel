@@ -11,7 +11,7 @@ name: Library Crates
 
 env:
   AS: nasm
-  RUST_TOOLCHAIN: 1.83.0
+  RUST_TOOLCHAIN: 1.88.0
   TOOLCHAIN_PROFILE: minimal
 
 jobs:
@@ -24,7 +24,7 @@ jobs:
       matrix:
         host_os:
           - ubuntu-latest
-          - windows-2019
+          - windows-2022
     steps:
       # Install first since it's needed to build NASM
       - name: Install LLVM and Clang
@@ -42,7 +42,7 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Checkout sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: recursive
 
@@ -61,7 +61,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-2019]
+        os: [ubuntu-latest, windows-2022]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
 
@@ -82,7 +82,7 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Checkout sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: recursive
 

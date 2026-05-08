@@ -35,8 +35,6 @@ pub const E820_TABLE_SIZE: usize = 128;
 pub const SIZE_4K: usize = 0x1000;
 pub const SIZE_2M: usize = 0x20_0000;
 pub const SIZE_1G: usize = 0x4000_0000;
-pub const FIRMWARE_BASE: usize = 0xFF00_0000;
-pub const FIRMWARE_SIZE: usize = 0x100_0000;
 
 lazy_static! {
     pub static ref MEMORY_MAP: Mutex<[E820Entry; E820_TABLE_SIZE]> =
@@ -112,9 +110,10 @@ fn parse_guided_hob(guided_hob: &'static [u8]) -> Option<&'static [E820Entry]> {
     let table = hob_lib::get_guid_data(guided_hob)?;
     let mut entry_num = table.len() / size_of::<E820Entry>();
 
-    let last_entry = E820Entry::read_from(
+    let last_entry = E820Entry::read_from_bytes(
         &table[(entry_num - 1) * size_of::<E820Entry>()..entry_num * size_of::<E820Entry>()],
-    )?;
+    )
+    .ok()?;
 
     // Ignore the padding zeros in GUIDed HOB
     if last_entry == E820Entry::default() {

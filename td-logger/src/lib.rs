@@ -4,8 +4,8 @@
 
 #![no_std]
 
-use log::{Level, Metadata, Record};
 use log::{LevelFilter, SetLoggerError};
+use log::{Metadata, Record};
 
 mod logger;
 pub use logger::*;
@@ -19,7 +19,7 @@ pub struct LoggerBackend;
 
 impl log::Log for LoggerBackend {
     fn enabled(&self, metadata: &Metadata) -> bool {
-        metadata.level() <= Level::Info
+        metadata.level() <= log::max_level()
     }
 
     fn log(&self, record: &Record) {
@@ -34,8 +34,8 @@ impl log::Log for LoggerBackend {
 /// Logger backend for the log crate
 static LOGGER_BACKEND: LoggerBackend = LoggerBackend;
 
-pub fn init() -> Result<(), SetLoggerError> {
-    log::set_logger(&LOGGER_BACKEND).map(|()| log::set_max_level(LevelFilter::Info))
+pub fn init(max_level: LevelFilter) -> Result<(), SetLoggerError> {
+    log::set_logger(&LOGGER_BACKEND).map(|()| log::set_max_level(max_level))
 }
 
 /// Write a byte to the debug port, converting `\n' to '\r\n`.
@@ -48,8 +48,36 @@ pub fn dbg_write_byte(byte: u8) {
 
 /// Write a string to the debug port.
 pub fn dbg_write_string(s: &str) {
-    for c in s.chars() {
-        dbg_write_byte(c as u8);
+    #[cfg(feature = "tdg_dbg")]
+    {
+        // Split long lines by 254 characters when tdg_dbg feature is enabled
+        // 254 to account for \n -> \r\n conversion
+        s.chars().fold(0usize, |char_count, c| {
+            if char_count >= 254 {
+                // Insert newline if we've reached the limit
+                dbg_write_byte(b'\n');
+                // Print the current character
+                dbg_write_byte(c as u8);
+                // Reset char count
+                if c == '\n' {
+                    0
+                } else {
+                    1
+                }
+            } else {
+                dbg_write_byte(c as u8);
+                if c == '\n' {
+                    0
+                } else {
+                    char_count + 1
+                }
+            }
+        });
+    }
+
+    #[cfg(not(feature = "tdg_dbg"))]
+    {
+        s.chars().for_each(|c| dbg_write_byte(c as u8));
     }
 }
 
@@ -104,7 +132,7 @@ mod tests {
 
     #[test]
     fn test_logger() {
-        init().unwrap();
+        init(LevelFilter::Info).unwrap();
 
         assert_eq!(LOGGER.lock().get_level(), LOG_LEVEL_INFO);
         LOGGER.lock().set_level(LOG_LEVEL_ERROR);

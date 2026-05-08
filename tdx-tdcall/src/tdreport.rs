@@ -3,11 +3,13 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
 use core::fmt;
-use core::mem::{size_of, zeroed};
+use core::mem::{size_of, zeroed, MaybeUninit};
 use core::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut};
 use scroll::{Pread, Pwrite};
 
-use crate::{td_call, TdCallError, TdcallArgs, TDCALL_STATUS_SUCCESS, TDCALL_TDREPORT};
+use crate::{
+    td_call, TdCallError, TdcallArgs, TDCALL_STATUS_SUCCESS, TDCALL_TDREPORT, TDCALL_VERIFYREPORT,
+};
 
 pub const TD_REPORT_SIZE: usize = 0x400;
 pub const TD_REPORT_ADDITIONAL_DATA_SIZE: usize = 64;
@@ -44,6 +46,12 @@ pub struct ReportMac {
     pub mac: [u8; 32],
 }
 
+impl ReportMac {
+    pub fn as_bytes(&self) -> &[u8] {
+        unsafe { &*slice_from_raw_parts(self as *const Self as *const u8, size_of::<Self>()) }
+    }
+}
+
 impl fmt::Display for ReportMac {
     // This trait requires `fmt` with this exact signature.
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -73,8 +81,9 @@ pub struct TeeTcbInfo {
     pub mrseam: [u8; 48],
     pub mrsigner_seam: [u8; 48],
     pub attributes: [u8; 8],
+    pub tee_tcb_svn2: [u8; 16],
     /// Reserved. Must be zero
-    pub reserved: [u8; 111],
+    pub reserved: [u8; 95],
 }
 
 impl fmt::Display for TeeTcbInfo {
@@ -84,9 +93,22 @@ impl fmt::Display for TeeTcbInfo {
             f,
             "TEE TCB Info:\n\tValid:\n\t{:x?}\n\tTEE TCB SVN:\n\t{:x?}\n\
                         \tMR SEAM:\n\t{:x?}\n\tMR Signer SEAM:\n\t{:x?}\n\
-                        \tAttributes:\n\t{:x?}\n",
-            self.valid, self.tee_tcb_svn, self.mrseam, self.mrsigner_seam, self.attributes
+                        \tAttributes:\n\t{:x?}\n\tTEE TCB SVN2:\n\t{:x?}\n",
+            self.valid,
+            self.tee_tcb_svn,
+            self.mrseam,
+            self.mrsigner_seam,
+            self.attributes,
+            self.tee_tcb_svn2
         )
+    }
+}
+
+impl TeeTcbInfo {
+    pub fn as_bytes(&self) -> &[u8] {
+        unsafe {
+            core::slice::from_raw_parts(self as *const TeeTcbInfo as *const u8, size_of::<Self>())
+        }
     }
 }
 
@@ -115,8 +137,18 @@ pub struct TdInfo {
     pub rtmr1: [u8; 48],
     pub rtmr2: [u8; 48],
     pub rtmr3: [u8; 48],
+    /// SHA384 hash of the TDINFO_STRUCTs of bound Service TDs
+    pub servtd_hash: [u8; 48],
     /// Reserved. Must be zero
-    pub reserved: [u8; 112],
+    pub reserved: [u8; 64],
+}
+
+impl TdInfo {
+    pub fn as_bytes(&self) -> &[u8] {
+        unsafe {
+            core::slice::from_raw_parts(self as *const TdInfo as *const u8, size_of::<Self>())
+        }
+    }
 }
 
 impl fmt::Display for TdInfo {
@@ -128,7 +160,8 @@ impl fmt::Display for TdInfo {
                         \tMR TD:\n\t{:x?}\n\tMR Config ID:\n\t{:x?}\n\
                         \tMR Owner:\n\t{:x?}\n\tMR Owner Config:\n\t{:x?}\n\
                         \tRTMR[0]:\n\t{:x?}\n\tRTMR[1]:\n\t{:x?}\n\
-                        \tRTMR[2]:\n\t{:x?}\n\tRTMR[3]:\n\t{:x?}\n",
+                        \tRTMR[2]:\n\t{:x?}\n\tRTMR[3]:\n\t{:x?}\n\
+                        \tServTD Hash:\n\t{:x?}\n",
             self.attributes,
             self.xfam,
             self.mrtd,
@@ -138,7 +171,8 @@ impl fmt::Display for TdInfo {
             self.rtmr0,
             self.rtmr1,
             self.rtmr2,
-            self.rtmr3
+            self.rtmr3,
+            self.servtd_hash
         )
     }
 }
@@ -175,6 +209,23 @@ impl TdxReport {
     pub fn as_bytes_mut(&mut self) -> &mut [u8] {
         unsafe { &mut *slice_from_raw_parts_mut(self as *mut Self as *mut u8, size_of::<Self>()) }
     }
+
+    pub fn read_from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < size_of::<TdxReport>() {
+            return None;
+        }
+
+        let mut uinit: MaybeUninit<TdxReport> = MaybeUninit::uninit();
+        // Safety: MaybeUninit<TdxReport> has same layout with TdxReport
+        Some(unsafe {
+            core::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                uinit.as_mut_ptr() as *mut u8,
+                size_of::<TdxReport>(),
+            );
+            uinit.assume_init()
+        })
+    }
 }
 
 impl Default for TdxReport {
@@ -185,6 +236,9 @@ impl Default for TdxReport {
 
 #[repr(C, align(1024))]
 struct TdxReportBuf(TdxReport);
+
+#[repr(C, align(256))]
+struct ReportMacBuf([u8; size_of::<ReportMac>()]);
 
 #[repr(C, align(64))]
 struct AdditionalDataBuf([u8; TD_REPORT_ADDITIONAL_DATA_SIZE]);
@@ -213,6 +267,32 @@ pub fn tdcall_report(
     }
 
     Ok(report_buf.0)
+}
+
+/// Verify a cryptographic REPORTMACSTRUCT that describes the contents of a TD,
+/// to determine that it was created on the current TEE on the current platform
+///
+/// Details can be found in TDX module ABI spec section 'TDG.MR.VERIFYREPORT'
+pub fn tdcall_verify_report(report_mac: &[u8]) -> Result<(), TdCallError> {
+    if report_mac.len() != size_of::<ReportMac>() {
+        return Err(TdCallError::TdxExitInvalidParameters);
+    }
+
+    let mut report_mac_buf = ReportMacBuf([0u8; size_of::<ReportMac>()]);
+    report_mac_buf.0.copy_from_slice(report_mac);
+
+    let mut args = TdcallArgs {
+        rax: TDCALL_VERIFYREPORT,
+        rcx: &mut report_mac_buf as *mut _ as u64,
+        ..Default::default()
+    };
+
+    let ret = td_call(&mut args);
+    if ret != TDCALL_STATUS_SUCCESS {
+        return Err(ret.into());
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

@@ -14,6 +14,7 @@ use asm::{empty_exception_handler, empty_exception_handler_size};
 use core::ffi::c_void;
 use core::mem::size_of;
 use core::panic::PanicInfo;
+use log::LevelFilter;
 use memory::Memory;
 use td_exception::idt::{load_idtr, DescriptorTablePointer, Idt, IdtEntry};
 use td_shim::event_log::CCEL_CC_TYPE_TDX;
@@ -23,7 +24,7 @@ use x86_64::VirtAddr;
 
 use r_efi::efi;
 use scroll::{Pread, Pwrite};
-use zerocopy::{AsBytes, ByteSlice, FromBytes};
+use zerocopy::{FromBytes, IntoBytes};
 
 use cc_measurement::{log::CcEventLogWriter, EV_EFI_HANDOFF_TABLES2, EV_PLATFORM_CONFIG_FLAGS};
 use td_layout::build_time::{self, *};
@@ -87,7 +88,11 @@ pub extern "win64" fn _start(
     info: usize,
 ) -> ! {
     // The bootstrap code has setup the stack, but only the stack is available now...
-    let _ = td_logger::init();
+
+    // Set the maximum log-level filter here; the actual logging level is controlled by the
+    // compile-time feature flags.
+    let _ = td_logger::init(LevelFilter::Trace);
+
     log::info!("Starting RUST Based TdShim boot_fv - {:p}, Top of stack - {:p}, init_vp - {:p}, info - 0x{:x} \n",
                boot_fv, top_of_stack, init_vp, info);
     td_exception::setup_exception_handlers();
@@ -346,7 +351,7 @@ fn prepare_acpi_tables(acpi_tables: &mut Vec<&[u8]>, mem: &Memory, vcpus: u32) -
         }
         speculation_barrier();
 
-        let header = GenericSdtHeader::read_from(&table[..size_of::<GenericSdtHeader>()])
+        let header = GenericSdtHeader::read_from_bytes(&table[..size_of::<GenericSdtHeader>()])
             .expect("Faile to read table header from ACPI GUID HOB");
         if table.len() < header.length as usize {
             panic!("Invalid ACPI table length\n");

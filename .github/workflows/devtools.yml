@@ -11,7 +11,7 @@ name: Devtools
 
 env:
   AS: nasm
-  RUST_TOOLCHAIN: 1.83.0
+  RUST_TOOLCHAIN: 1.88.0
   TOOLCHAIN_PROFILE: minimal
 
 jobs:
@@ -24,7 +24,7 @@ jobs:
       matrix:
         host_os:
           - ubuntu-latest
-          - windows-2019
+          - windows-2022
     steps:
       - name: Install LLVM and Clang
         uses: KyleMayes/install-llvm-action@v2
@@ -36,7 +36,7 @@ jobs:
         uses: ilammy/setup-nasm@v1
 
       - name: Checkout sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: recursive
 
